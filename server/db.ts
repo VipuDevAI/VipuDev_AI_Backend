@@ -8,6 +8,6 @@ if (!process.env.DATABASE_URL) {
 
 export const db = drizzle({
   connection: process.env.DATABASE_URL,
-  ws: ws,
+  ws, // WebSocket for realtime connection (optional but recommended)
   schema,
 });
