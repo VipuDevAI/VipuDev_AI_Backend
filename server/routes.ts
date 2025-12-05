@@ -41,6 +41,12 @@ const upload = multer({
 });
 
 // ===================================================================================
+// PERPLEXITY CONFIG (REALTIME RESEARCH BRAIN)
+// ===================================================================================
+const perplexityKey = process.env.VIPU_PERPLEXITY_KEY || "";
+const PERPLEXITY_MODEL = "sonar"; // you can switch to "sonar-pro" if your plan allows
+
+// ===================================================================================
 // VIPUDEVAI PERSONALITY ENGINE
 // ===================================================================================
 const VIPU_SYSTEM_PROMPT = `
@@ -87,6 +93,57 @@ async function buildVipuMessages(
   }
 
   return [...base, ...messages];
+}
+
+// ===================================================================================
+// PERPLEXITY HELPER (RESEARCH ENGINE)
+// ===================================================================================
+async function callPerplexityResearch(
+  question: string,
+): Promise<string | null> {
+  if (!perplexityKey) return null;
+
+  try {
+    const response = await fetch("https://api.perplexity.ai/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${perplexityKey}`,
+      },
+      body: JSON.stringify({
+        model: PERPLEXITY_MODEL,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a research engine that finds accurate, up-to-date factual information from the web. Respond with a concise but information-dense summary, including key facts, numbers, and named references where relevant.",
+          },
+          {
+            role: "user",
+            content: question,
+          },
+        ],
+        max_tokens: 800,
+      }),
+    });
+
+    if (!response.ok) {
+      console.error("Perplexity error status:", response.status);
+      const text = await response.text();
+      console.error("Perplexity error body:", text);
+      return null;
+    }
+
+    const data: any = await response.json();
+    const content =
+      data?.choices?.[0]?.message?.content ||
+      data?.choices?.[0]?.delta?.content ||
+      "";
+    return typeof content === "string" ? content : JSON.stringify(content);
+  } catch (err) {
+    console.error("Perplexity request failed:", err);
+    return null;
+  }
 }
 
 // ===================================================================================
@@ -153,7 +210,9 @@ export async function registerRoutes(
       res.status(201).json({ project: await storage.createProject(data) });
     } catch (e) {
       if (e instanceof z.ZodError)
-        return res.status(400).json({ error: "Invalid project data", details: e.errors });
+        return res
+          .status(400)
+          .json({ error: "Invalid project data", details: e.errors });
       res.status(500).json({ error: "Failed to create project" });
     }
   });
@@ -166,7 +225,9 @@ export async function registerRoutes(
       res.json({ project });
     } catch (e) {
       if (e instanceof z.ZodError)
-        return res.status(400).json({ error: "Invalid project data", details: e.errors });
+        return res
+          .status(400)
+          .json({ error: "Invalid project data", details: e.errors });
       res.status(500).json({ error: "Failed to update project" });
     }
   });
@@ -199,7 +260,9 @@ export async function registerRoutes(
       res.status(201).json({ message: await storage.createChatMessage(data) });
     } catch (e) {
       if (e instanceof z.ZodError)
-        return res.status(400).json({ error: "Invalid message data", details: e.errors });
+        return res
+          .status(400)
+          .json({ error: "Invalid message data", details: e.errors });
       res.status(500).json({ error: "Failed to save message" });
     }
   });
@@ -231,20 +294,25 @@ export async function registerRoutes(
       res.status(201).json({ execution: await storage.createCodeExecution(data) });
     } catch (e) {
       if (e instanceof z.ZodError)
-        return res.status(400).json({ error: "Invalid execution data", details: e.errors });
+        return res
+          .status(400)
+          .json({ error: "Invalid execution data", details: e.errors });
       res.status(500).json({ error: "Failed to create execution" });
     }
   });
 
   // ===================================================================================
-  // VIPUDEVAI INTELLIGENCE / AI CHAT
+  // VIPUDEVAI INTELLIGENCE / AI CHAT (OPENAI-ONLY, ORIGINAL)
   // ===================================================================================
   app.post("/api/assistant/chat", async (req, res) => {
     if (!openai)
       return res.status(500).json({ error: "OpenAI API key missing" });
 
     try {
-      const { messages, codeContext } = req.body;
+      const { messages, codeContext } = req.body as {
+        messages: { role: "user" | "assistant" | "system"; content: string }[];
+        codeContext?: string;
+      };
 
       const finalMessages = await buildVipuMessages(messages || [], codeContext);
 
@@ -257,7 +325,118 @@ export async function registerRoutes(
 
       res.json({ reply: completion.choices[0]?.message?.content || "" });
     } catch (err) {
+      console.error("assistant/chat error:", err);
       res.status(500).json({ error: "Assistant failed" });
+    }
+  });
+
+  // ===================================================================================
+  // HYBRID CHAT: PERPLEXITY (RESEARCH) + GPT (REASONING) -> SINGLE ANSWER
+  // ===================================================================================
+  app.post("/api/hybrid-chat", async (req, res) => {
+    if (!openai) {
+      return res
+        .status(500)
+        .json({ error: "OpenAI API key missing on server" });
+    }
+
+    try {
+      const { messages, codeContext } = req.body as {
+        messages: { role: "user" | "assistant" | "system"; content: string }[];
+        codeContext?: string;
+      };
+
+      // 1) Extract latest user question
+      const userMessages = (messages || []).filter((m) => m.role === "user");
+      const lastUser =
+        userMessages.length > 0
+          ? userMessages[userMessages.length - 1].content
+          : "No explicit user question provided.";
+
+      // 2) Ask Perplexity for real-time research (if key exists)
+      let researchSummary: string | null = null;
+      if (perplexityKey) {
+        researchSummary = await callPerplexityResearch(lastUser);
+      }
+
+      // 3) Build merged prompt for GPT (VipuDevAI personality)
+      const memoryMessages = await buildVipuMessages([], codeContext);
+
+      const mergedSystem = {
+        role: "system" as const,
+        content: `${VIPU_SYSTEM_PROMPT}
+
+You will be given:
+- A user question
+- Optional up-to-date research from an external engine
+
+Use the research ONLY as factual support. You must:
+- Give one final, clean answer.
+- Do NOT mention Perplexity or any external tool by name.
+- If research is missing, still answer confidently using your own knowledge.
+- If research conflicts with your prior knowledge, prefer the research for recent events.
+`,
+      };
+
+      const mergedUser = {
+        role: "user" as const,
+        content:
+          `User question:\n${lastUser}\n\n` +
+          (codeContext
+            ? `Code / project context:\n${codeContext}\n\n`
+            : "") +
+          (researchSummary
+            ? `External research summary (may contain recent facts):\n${researchSummary}\n\nPlease integrate these facts into your answer, but respond in one coherent message addressed to Balaji.`
+            : `No external research is available. Answer using your own reasoning and knowledge.`),
+      };
+
+      const finalMessages = [
+        ...memoryMessages.filter((m) => m.role === "system"),
+        mergedSystem,
+        mergedUser,
+      ];
+
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: finalMessages,
+        temperature: 0.2,
+        max_tokens: 4000,
+      });
+
+      const reply = completion.choices[0]?.message?.content || "";
+
+      res.json({
+        reply,
+        usedResearch: !!researchSummary && !!perplexityKey,
+      });
+    } catch (err) {
+      console.error("hybrid-chat error:", err);
+      // Fallback: basic assistant response if hybrid fails
+      try {
+        const fallback = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: [
+            {
+              role: "system",
+              content:
+                VIPU_SYSTEM_PROMPT +
+                "\nHybrid research path failed; just answer as best you can.",
+            },
+            ...(req.body?.messages || []),
+          ],
+          temperature: 0.2,
+          max_tokens: 2000,
+        });
+        return res.json({
+          reply: fallback.choices[0]?.message?.content || "",
+          usedResearch: false,
+        });
+      } catch (innerErr) {
+        console.error("hybrid-chat fallback error:", innerErr);
+        return res.status(500).json({
+          error: "Hybrid assistant failed completely",
+        });
+      }
     }
   });
 
@@ -265,7 +444,10 @@ export async function registerRoutes(
   // SIMPLE CODE RUNNER (JS/Python)
   // ===================================================================================
   app.post("/api/run", async (req, res) => {
-    const { code, language } = req.body;
+    const { code, language } = req.body as {
+      code?: string;
+      language?: string;
+    };
     if (!code) return res.status(400).json({ error: "Code required" });
 
     const lang = language === "python" ? "python" : "javascript";
@@ -278,16 +460,20 @@ export async function registerRoutes(
 
       fs.writeFileSync(filePath, code);
 
-      exec(`${cmd} "${filePath}"`, { timeout: 8000 }, (error, stdout, stderr) => {
-        res.json({
-          stdout,
-          stderr,
-          exitCode: (error as any)?.code || 0,
-          timedOut: !!(error as any)?.killed,
-        });
+      exec(
+        `${cmd} "${filePath}"`,
+        { timeout: 8000 },
+        (error, stdout, stderr) => {
+          res.json({
+            stdout,
+            stderr,
+            exitCode: (error as any)?.code || 0,
+            timedOut: !!(error as any)?.killed,
+          });
 
-        fs.rmSync(dir, { force: true, recursive: true });
-      });
+          fs.rmSync(dir, { force: true, recursive: true });
+        },
+      );
     } catch {
       res.status(500).json({ error: "Failed to execute" });
     }
@@ -297,7 +483,11 @@ export async function registerRoutes(
   // DOCKER SANDBOX EXECUTION
   // ===================================================================================
   app.post("/api/run-project", async (req, res) => {
-    const { files, language, command } = req.body;
+    const { files, language, command } = req.body as {
+      files?: { path: string; content: string }[];
+      language?: string;
+      command?: string;
+    };
     if (!files || !Array.isArray(files)) {
       return res.status(400).json({ error: "files[] required" });
     }
@@ -311,7 +501,7 @@ export async function registerRoutes(
       tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "vipuproject-"));
 
       for (const f of files) {
-        const safe = f.path.replace(/^[/\\]+/, "");
+        const safe = (f.path || "").replace(/^[/\\]+/, "");
         const dest = path.join(tempDir, safe || "main.js");
         fs.mkdirSync(path.dirname(dest), { recursive: true });
         fs.writeFileSync(dest, f.content ?? "");
@@ -366,7 +556,11 @@ export async function registerRoutes(
   // ZIP CREATOR
   // ===================================================================================
   app.post("/api/zip-code", (req, res) => {
-    const { code, language, filename } = req.body;
+    const { code, language, filename } = req.body as {
+      code?: string;
+      language?: string;
+      filename?: string;
+    };
     if (!code) return res.status(400).json({ error: "Code required" });
 
     const ext =
@@ -454,7 +648,7 @@ export async function registerRoutes(
     if (!openai)
       return res.status(500).json({ error: "API key missing" });
 
-    const { prompt } = req.body;
+    const { prompt } = req.body as { prompt?: string };
     if (!prompt) return res.status(400).json({ error: "prompt required" });
 
     try {
@@ -475,7 +669,7 @@ export async function registerRoutes(
   // DEPLOYMENT GUIDE
   // ===================================================================================
   app.post("/api/deploy", async (req, res) => {
-    const { platform } = req.body;
+    const { platform } = req.body as { platform?: string };
     if (!platform) return res.status(400).json({ error: "platform required" });
 
     let logs = "";
