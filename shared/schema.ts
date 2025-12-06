@@ -1,9 +1,11 @@
-
 import { sql } from "drizzle-orm";
 import { pgTable, text, varchar, serial, timestamp, jsonb } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
+/* ============================================================
+   USERS
+============================================================ */
 export const users = pgTable("users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   username: text("username").notNull().unique(),
@@ -18,7 +20,9 @@ export const insertUserSchema = createInsertSchema(users).pick({
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 
-// Projects table
+/* ============================================================
+   PROJECTS
+============================================================ */
 export const projects = pgTable("projects", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   name: text("name").notNull(),
@@ -37,12 +41,21 @@ export const insertProjectSchema = createInsertSchema(projects).omit({
 export type InsertProject = z.infer<typeof insertProjectSchema>;
 export type Project = typeof projects.$inferSelect;
 
-// Chat messages table
+/* ============================================================
+   CHAT MESSAGES (🔥 upgraded for project-specific memory)
+============================================================ */
 export const chatMessages = pgTable("chat_messages", {
   id: serial("id").primaryKey(),
-  role: text("role").notNull(),
+
+  role: text("role").notNull(),         // "user" or "assistant"
   content: text("content").notNull(),
   codeContext: text("code_context"),
+
+  // 🔥 NEW: Per-project memory support
+  projectId: varchar("project_id")
+    .references(() => projects.id)
+    .default(null),
+
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -54,7 +67,9 @@ export const insertChatMessageSchema = createInsertSchema(chatMessages).omit({
 export type InsertChatMessage = z.infer<typeof insertChatMessageSchema>;
 export type ChatMessage = typeof chatMessages.$inferSelect;
 
-// Code executions table
+/* ============================================================
+   CODE EXECUTIONS
+============================================================ */
 export const codeExecutions = pgTable("code_executions", {
   id: serial("id").primaryKey(),
   code: text("code").notNull(),
@@ -73,7 +88,9 @@ export const insertCodeExecutionSchema = createInsertSchema(codeExecutions).omit
 export type InsertCodeExecution = z.infer<typeof insertCodeExecutionSchema>;
 export type CodeExecution = typeof codeExecutions.$inferSelect;
 
-// User config table
+/* ============================================================
+   USER CONFIG
+============================================================ */
 export const userConfig = pgTable("user_config", {
   id: serial("id").primaryKey(),
   backendUrl: text("backend_url"),
