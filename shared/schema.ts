@@ -42,16 +42,16 @@ export type InsertProject = z.infer<typeof insertProjectSchema>;
 export type Project = typeof projects.$inferSelect;
 
 /* ============================================================
-   CHAT MESSAGES (🔥 upgraded for project-specific memory)
+   CHAT MESSAGES (🔥 with per-project memory)
 ============================================================ */
 export const chatMessages = pgTable("chat_messages", {
   id: serial("id").primaryKey(),
 
-  role: text("role").notNull(),         // "user" or "assistant"
+  role: text("role").notNull(),           // "user" | "assistant"
   content: text("content").notNull(),
   codeContext: text("code_context"),
 
-  // 🔥 NEW: Per-project memory support
+  // 🔥 NEW: per-project context — each project has its own memory
   projectId: varchar("project_id")
     .references(() => projects.id)
     .default(null),
@@ -66,6 +66,31 @@ export const insertChatMessageSchema = createInsertSchema(chatMessages).omit({
 
 export type InsertChatMessage = z.infer<typeof insertChatMessageSchema>;
 export type ChatMessage = typeof chatMessages.$inferSelect;
+
+/* ============================================================
+   LONG-TERM MEMORY SUMMARIES (🔥 NEW — Replit Killer)
+============================================================ */
+export const memorySummaries = pgTable("memory_summaries", {
+  id: serial("id").primaryKey(),
+
+  // Which project this summary belongs to
+  projectId: varchar("project_id")
+    .references(() => projects.id)
+    .default(null),
+
+  // Condensed memory text (GPT-generated summary)
+  summary: text("summary").notNull(),
+
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertMemorySummarySchema = createInsertSchema(memorySummaries).omit({
+  id: true,
+  updatedAt: true,
+});
+
+export type InsertMemorySummary = z.infer<typeof insertMemorySummarySchema>;
+export type MemorySummary = typeof memorySummaries.$inferSelect;
 
 /* ============================================================
    CODE EXECUTIONS
