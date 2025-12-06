@@ -13,12 +13,12 @@ import {
   projects,
   chatMessages,
   codeExecutions,
-  userConfig
+  userConfig,
+  memorySummaries
 } from "@shared/schema";
 
 import { db } from "./db";
-import { eq, desc, and, isNull } from "drizzle-orm";
-import { sql } from "drizzle-orm";
+import { eq, desc, and, isNull, sql } from "drizzle-orm";
 
 export interface IStorage {
   // User operations
@@ -37,6 +37,11 @@ export interface IStorage {
   getChatMessages(limit?: number, projectId?: string | null): Promise<ChatMessage[]>;
   createChatMessage(message: InsertChatMessage): Promise<ChatMessage>;
   clearChatHistory(projectId?: string | null): Promise<void>;
+
+  // Long-term memory
+  getRecentMessages(projectId?: string | null): Promise<ChatMessage[]>;
+  getMemorySummary(projectId?: string | null): Promise<string | null>;
+  saveMemorySummary(projectId: string | null, summary: string): Promise<void>;
 
   // Code execution operations
   getCodeExecutions(limit?: number): Promise<CodeExecution[]>;
@@ -98,32 +103,21 @@ export class DatabaseStorage implements IStorage {
   }
 
   /* ============================================================
-     CHAT — upgraded to per-project memory 🔥
+     CHAT — Now with per-project memory and long-term summaries
   ============================================================ */
   async getChatMessages(
     limit: number = 50,
     projectId: string | null = null
   ): Promise<ChatMessage[]> {
-    if (projectId) {
-      return db
-        .select()
-        .from(chatMessages)
-        .where(eq(chatMessages.projectId, projectId))
-        .orderBy(chatMessages.createdAt)
-        .limit(limit);
-    }
-
-    // Global chat (no project)
     return db
       .select()
       .from(chatMessages)
-      .where(isNull(chatMessages.projectId))
+      .where(projectId ? eq(chatMessages.projectId, projectId) : isNull(chatMessages.projectId))
       .orderBy(chatMessages.createdAt)
       .limit(limit);
   }
 
   async createChatMessage(message: InsertChatMessage): Promise<ChatMessage> {
-    // message may or may not include projectId — both are legal
     const [newMessage] = await db.insert(chatMessages).values(message).returning();
     return newMessage;
   }
@@ -133,6 +127,51 @@ export class DatabaseStorage implements IStorage {
       await db.delete(chatMessages).where(eq(chatMessages.projectId, projectId));
     } else {
       await db.delete(chatMessages).where(isNull(chatMessages.projectId));
+    }
+
+    // also clear memory summary
+    if (projectId) {
+      await db.delete(memorySummaries).where(eq(memorySummaries.projectId, projectId));
+    } else {
+      await db.delete(memorySummaries).where(isNull(memorySummaries.projectId));
+    }
+  }
+
+  /* ============================================================
+     LONG-TERM MEMORY (Replit killer)
+  ============================================================ */
+  async getRecentMessages(projectId: string | null = null): Promise<ChatMessage[]> {
+    return db
+      .select()
+      .from(chatMessages)
+      .where(projectId ? eq(chatMessages.projectId, projectId) : isNull(chatMessages.projectId))
+      .orderBy(desc(chatMessages.createdAt))
+      .limit(20);
+  }
+
+  async getMemorySummary(projectId: string | null = null): Promise<string | null> {
+    const [row] = await db
+      .select()
+      .from(memorySummaries)
+      .where(projectId ? eq(memorySummaries.projectId, projectId) : isNull(memorySummaries.projectId))
+      .limit(1);
+
+    return row ? row.summary : null;
+  }
+
+  async saveMemorySummary(projectId: string | null, summary: string): Promise<void> {
+    const existing = await this.getMemorySummary(projectId);
+
+    if (existing) {
+      await db
+        .update(memorySummaries)
+        .set({ summary, updatedAt: sql`NOW()` })
+        .where(projectId ? eq(memorySummaries.projectId, projectId) : isNull(memorySummaries.projectId));
+    } else {
+      await db.insert(memorySummaries).values({
+        projectId,
+        summary,
+      });
     }
   }
 
