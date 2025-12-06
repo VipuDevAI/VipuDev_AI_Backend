@@ -44,7 +44,7 @@ const upload = multer({
 // PERPLEXITY CONFIG (REALTIME RESEARCH BRAIN)
 // ===================================================================================
 const perplexityKey = process.env.VIPU_PERPLEXITY_KEY || "";
-const PERPLEXITY_MODEL = "sonar"; // you can switch to "sonar-pro" if your plan allows
+const PERPLEXITY_MODEL = "sonar"; // or "sonar-pro" if plan allows
 
 // ===================================================================================
 // VIPUDEVAI PERSONALITY ENGINE
@@ -153,6 +153,13 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express,
 ): Promise<Server> {
+  // ===========================
+  // HEALTH CHECK
+  // ===========================
+  app.get("/api/health", (_req, res) => {
+    res.json({ status: "ok", service: "vipudevai-backend" });
+  });
+
   // ===========================
   // AUTH ROUTES
   // ===========================
@@ -298,6 +305,35 @@ export async function registerRoutes(
           .status(400)
           .json({ error: "Invalid execution data", details: e.errors });
       res.status(500).json({ error: "Failed to create execution" });
+    }
+  });
+
+  // ===========================
+  // CONFIG ROUTES (for /config page)
+// ===========================
+  app.get("/api/config", async (_req, res) => {
+    try {
+      const config = await storage.getConfig();
+      res.json({ config: config || {} });
+    } catch (error) {
+      console.error("Error fetching config:", error);
+      res.status(500).json({ error: "Failed to fetch config" });
+    }
+  });
+
+  app.post("/api/config", async (req, res) => {
+    try {
+      const data = insertUserConfigSchema.parse(req.body);
+      const config = await storage.updateConfig(data);
+      res.json({ config });
+    } catch (e) {
+      if (e instanceof z.ZodError) {
+        return res
+          .status(400)
+          .json({ error: "Invalid config data", details: e.errors });
+      }
+      console.error("Error updating config:", e);
+      res.status(500).json({ error: "Failed to update config" });
     }
   });
 
