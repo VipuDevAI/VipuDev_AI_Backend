@@ -15,8 +15,9 @@ import {
   codeExecutions,
   userConfig
 } from "@shared/schema";
+
 import { db } from "./db";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, and, isNull } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 
 export interface IStorage {
@@ -33,9 +34,9 @@ export interface IStorage {
   deleteProject(id: string): Promise<boolean>;
 
   // Chat operations
-  getChatMessages(limit?: number): Promise<ChatMessage[]>;
+  getChatMessages(limit?: number, projectId?: string | null): Promise<ChatMessage[]>;
   createChatMessage(message: InsertChatMessage): Promise<ChatMessage>;
-  clearChatHistory(): Promise<void>;
+  clearChatHistory(projectId?: string | null): Promise<void>;
 
   // Code execution operations
   getCodeExecutions(limit?: number): Promise<CodeExecution[]>;
@@ -47,7 +48,9 @@ export interface IStorage {
 }
 
 export class DatabaseStorage implements IStorage {
-  // User operations
+  /* ============================================================
+     USERS
+  ============================================================ */
   async getUser(id: string): Promise<User | undefined> {
     const [user] = await db.select().from(users).where(eq(users.id, id)).limit(1);
     return user;
@@ -63,7 +66,9 @@ export class DatabaseStorage implements IStorage {
     return user;
   }
 
-  // Project operations
+  /* ============================================================
+     PROJECTS
+  ============================================================ */
   async getProjects(): Promise<Project[]> {
     return db.select().from(projects).orderBy(desc(projects.updatedAt));
   }
@@ -92,21 +97,48 @@ export class DatabaseStorage implements IStorage {
     return result.rowCount !== null && result.rowCount > 0;
   }
 
-  // Chat operations
-  async getChatMessages(limit: number = 50): Promise<ChatMessage[]> {
-    return db.select().from(chatMessages).orderBy(chatMessages.createdAt).limit(limit);
+  /* ============================================================
+     CHAT — upgraded to per-project memory 🔥
+  ============================================================ */
+  async getChatMessages(
+    limit: number = 50,
+    projectId: string | null = null
+  ): Promise<ChatMessage[]> {
+    if (projectId) {
+      return db
+        .select()
+        .from(chatMessages)
+        .where(eq(chatMessages.projectId, projectId))
+        .orderBy(chatMessages.createdAt)
+        .limit(limit);
+    }
+
+    // Global chat (no project)
+    return db
+      .select()
+      .from(chatMessages)
+      .where(isNull(chatMessages.projectId))
+      .orderBy(chatMessages.createdAt)
+      .limit(limit);
   }
 
   async createChatMessage(message: InsertChatMessage): Promise<ChatMessage> {
+    // message may or may not include projectId — both are legal
     const [newMessage] = await db.insert(chatMessages).values(message).returning();
     return newMessage;
   }
 
-  async clearChatHistory(): Promise<void> {
-    await db.delete(chatMessages);
+  async clearChatHistory(projectId: string | null = null): Promise<void> {
+    if (projectId) {
+      await db.delete(chatMessages).where(eq(chatMessages.projectId, projectId));
+    } else {
+      await db.delete(chatMessages).where(isNull(chatMessages.projectId));
+    }
   }
 
-  // Code execution operations
+  /* ============================================================
+     CODE EXECUTIONS
+  ============================================================ */
   async getCodeExecutions(limit: number = 20): Promise<CodeExecution[]> {
     return db.select().from(codeExecutions).orderBy(desc(codeExecutions.createdAt)).limit(limit);
   }
@@ -116,7 +148,9 @@ export class DatabaseStorage implements IStorage {
     return newExecution;
   }
 
-  // Config operations
+  /* ============================================================
+     USER CONFIG
+  ============================================================ */
   async getConfig(): Promise<UserConfig | undefined> {
     const [config] = await db.select().from(userConfig).limit(1);
     return config;
